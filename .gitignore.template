@@ -1,0 +1,14 @@
+*.pyc
+__pycache__
+.ipynb_checkpoints
+
+/settings.py
+.gitignore
+
+atilf_codwoe
+codwoe_git
+
+*.pdf
+*.png
+
+# custom local ingores
