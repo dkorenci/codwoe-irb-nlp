@@ -22,10 +22,10 @@ pred_file="$DATASET/trial-data_all/$LANGUAGE.trial.complete.json"
 pred_output="$OUTPUT/prediction/$LANGUAGE.trial.pred.json"
 
 python main.py \
-      --do_train --save_dir "$models" --summary_logdir "$logs" \
+      --do_htune --save_dir "$models" --summary_logdir "$logs" \
       --train_file "$trainfile" --dev_file "$devfile" \
       --vocab_lang "$LANGUAGE" --vocab_subdir "$vocabdset" --vocab_size 8000 \
-      --device "cuda" --epochs 5 \
+      --device "cuda" --epochs 2 \
       --model "revdict-base" --input_key "gloss" --output_key "$EMBBEDING" \
       --settings "revdict-base-mse" --n_head 2 --n_layers=2 --emb_size 128 \
       --do_pred --pred_file "$pred_file" --pred_output "$pred_output" --pred_mod "lower" \

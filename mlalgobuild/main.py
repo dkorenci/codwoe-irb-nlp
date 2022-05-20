@@ -172,6 +172,12 @@ def get_parser(
         default=100,
         help="Number of epochs to run training",
     )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=1024,
+        help="Size of the batch",
+    )
     parser.add_argument("--scheudle", type=str, default='hugginface',
                         choices=('hugginface', 'plat'),
                         help="defines the learning rate scheudler")
@@ -251,11 +257,26 @@ def get_parser(
              "dsetv1",
     )
     parser.add_argument(
+        "--aggout",
+        type=str,
+        default="avg",
+        choices=("avg", "sum", "eos"),
+        help="For revdict, select the method for aggregating the output vector from the transformer."
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=10,
+        help="Random seed for torch, python, numpy.",
+    )
+    parser.add_argument(
         "--rndseed",
         type=int,
         default=713873,
         help="Random seed for torch, python, numpy.",
     )
+    parser.add_argument(
+        '--multitask', dest='multitask', action='store_true', default=False)
     return parser
 
 def get_word_emb(word_emb, vocab_type, vocab_lang, vocab_subset,
@@ -284,6 +305,7 @@ def train(
     device="cuda:0",
     epochs=100,
     scheudle='hugginface',
+    batch_size=1024,
     learning_rate=1e-4,
     beta1=0.9,
     beta2=0.999,
@@ -304,6 +326,8 @@ def train(
     get_inputs=lambda x,y: (x,),
     get_output=lambda x,y: y,
     get_predict=lambda p: p,
+    aggout="avg",
+    multitask=False,
 ):
     # CHANGED: To enable saving the best model for each trial.
     # save_dir = save_dir / embedding    
@@ -361,11 +385,11 @@ def train(
     assert dev_file is not None, "Missing dev dataset"
     gloss_vec_size, train_dataloader = construct_dataloader('train', data_file=args.train_file,
             vocab_lang=vocab_lang, vocab_subset=vocab_subset, vocab_subdir=vocab_subdir,
-            vocab_type=vocab_type, vocab_size=vocab_size, maxlen=maxlen,
+            vocab_type=vocab_type, vocab_size=vocab_size, maxlen=maxlen, batch_size=batch_size,
             input_key=args.input_key, output_key=args.output_key, shuffle=True)
     gloss_vec_size, dev_dataloader = construct_dataloader('dev', data_file=args.train_file,
             vocab_lang=vocab_lang, vocab_subset=vocab_subset, vocab_subdir=vocab_subdir,
-            vocab_type=vocab_type, vocab_size=vocab_size, maxlen=maxlen,
+            vocab_type=vocab_type, vocab_size=vocab_size, maxlen=maxlen, batch_size=batch_size,
             input_key=args.input_key, output_key=args.output_key, shuffle=False)
     logger.debug("dataloaders and vocabs set up")
     ## Load/construct pretrained word embeddings
@@ -375,10 +399,17 @@ def train(
     if word_emb is not None: logger.debug("word embeddings loaded")
     ## model
     if 'revdict' in model: #REVDICT
-        model = mlalgobuild.models_core.model_utils.get_model(
-            model, max_vocab_idx=train_dataloader.dataset.maxVocabIndex(),
-            word_emb=word_emb, d_emb=emb_size, maxlen=maxlen, # input data format
-            n_head=n_head, n_layers=n_layers, dropout=dropout) # model
+        if not multitask:
+            model = mlalgobuild.models_core.model_utils.get_model(
+                model, max_vocab_idx=train_dataloader.dataset.maxVocabIndex(),
+                word_emb=word_emb, d_emb=emb_size, maxlen=maxlen, # input data format
+                n_head=n_head, n_layers=n_layers, dropout=dropout, aggout=aggout) # model
+        else:
+            model = mlalgobuild.models_core.model_utils.get_model(
+                model, max_vocab_idx=train_dataloader.dataset.maxVocabIndex(),
+                word_emb=word_emb, d_emb=emb_size, maxlen=maxlen, # input data format
+                n_head=n_head, n_layers=n_layers, dropout=dropout,
+                aggout=aggout, multitask_size=gloss_vec_size) # model
     else: # DEFMOD
         if model != 'defmod-rnn': # defmod transformer
             # TODO if using "adapted" allvec - set d_input to gloss_vec_size
@@ -458,7 +489,13 @@ def train(
             inputs = get_inputs(X, Y)
             output = get_output(X, Y)
             # Get processed predictions.
-            pred = get_predict( model(*inputs) )
+            if multitask:
+                multiout = batch['allvec_tensor'].to(device)
+                pred, multipred = model(*inputs)
+                pred = get_predict(pred)
+                multipred = get_predict(multipred)
+            else:
+                pred = get_predict( model(*inputs) )
             # orig code for defmod:
             # vec = batch[vec_tensor_key].to(device)
             # gls = batch["gloss_tensor"].to(device)
@@ -468,6 +505,11 @@ def train(
             loss = criterion(pred, output,
                              ignore_index=ignore_index,
                              label_smoothing=label_smoothing)
+            if multitask:
+                loss += 0.3 * criterion(multipred, multiout,
+                                ignore_index=ignore_index,
+                                label_smoothing=label_smoothing)
+
             loss.backward()
             grad_remains = True
             step = next(train_step)
@@ -514,8 +556,12 @@ def train(
                 inputs = get_inputs(X, Y)
                 output = get_output(X, Y)
                 # Get processed predictions.
-                pred1 = model(*inputs)
-                pred = get_predict( pred1 )
+                if multitask:
+                    pred1, multipred = model(*inputs)
+                    pred = get_predict(pred1)
+                else:
+                    pred1 = model(*inputs)
+                    pred = get_predict(pred1)
                 
                 # Get dev summaries
                 for k in dev_summaries:
@@ -695,7 +741,10 @@ def pred(args):
                     if args.modout == 'dsetv1': gloss = dsetV1Modout(gloss)
                     predictions.append({"id": id, args.output_key: gloss})
             else: # revdict
-                pred = model(btch)
+                if args.multitask:
+                    pred, _ = model(btch)
+                else:
+                    pred = model(btch)
                 for id, pred_proc in zip(batch["id"], pred.cpu().unbind()):
                     predictions.append(
                         # {"id": id, args.output_key: pred_proc.view(-1).cpu().tolist()}
@@ -724,22 +773,23 @@ def apply_rnd_seed(rndseed):
 
 def main(args):
     assert not (args.do_train and args.do_htune), "Conflicting options"
-    apply_rnd_seed(args.rndseed)
-
+    
     hparams_default={
-        "learning_rate": 1e-4,
+        "learning_rate": 1e-3,
         "weight_decay": 0.5,
         "beta_a": 0.9,
         "beta_b": 0.9,
-        "dropout": 0.5,
+        "dropout": 0.2,
         "warmup_len": 0.2,
         "label_smoothing": 0,
-        "batch_accum": 5,
-        "n_head_pow": 0,
-        "n_layers": 1,
+        "batch_accum": 1,
+        "n_head_pow": 2,
+        "n_layers": 2,
     }
 
     if args.do_train:
+        # Set seed for train mode 
+        apply_rnd_seed(args.rndseed)
         logger.debug("Performing training")
         stts = modelbuild_settings.SETTINGS[args.settings]()
         criterion = stts.get_criterion()
@@ -761,6 +811,8 @@ def main(args):
             save_dir = args.save_dir,
             device = args.device,
             epochs = args.epochs,
+            batch_size = args.batch_size,
+            patience = args.patience,
             dropout=args.dropout,
             in_dropout=args.in_dropout,
             scheudle=args.scheudle,
@@ -775,6 +827,8 @@ def main(args):
             get_inputs = get_inputs,
             get_output = get_output,
             get_predict = get_predict,
+            aggout = args.aggout,
+            multitask = args.multitask,
         )
     elif args.do_htune:
         # Set all settings
@@ -786,10 +840,10 @@ def main(args):
         search_space = stts.get_search_space()
         # TODO (later): add word_emb options for pretrained word embeddings to search space ?
         # TODO (later): add emb_size option for model embedding size to search space ?
-        if args.vocab_type == 'sentencepiece':
-            # TODO: handle principally, like other params in search space ?
-            vsize = skopt.space.Categorical([5000, 6000, 7000, 8000, 9000, 10000], name='vocab_size')
-            search_space.append(vsize)
+        # if args.vocab_type == 'sentencepiece':
+        #     # TODO: handle principally, like other params in search space ?
+        #     vsize = skopt.space.Categorical([5000, 6000, 7000, 8000, 9000, 10000], name='vocab_size')
+        #     search_space.append(vsize)
         skopt_kwargs = stts.get_skopt_kwargs()
         get_inputs = stts.get_train_inputs_handler()
         get_output = stts.get_train_output_handler()
@@ -813,7 +867,7 @@ def main(args):
                 train_file=args.train_file, dev_file=args.dev_file,
                 vocab_lang=args.vocab_lang, vocab_subset=args.vocab_subset,
                 vocab_subdir=args.vocab_subdir, vocab_type=args.vocab_type,
-                vocab_size=hps["vocab_size"],
+                vocab_size=args.vocab_size,
                 model=args.model, emb_size=args.emb_size, maxlen=args.maxlen,
                 word_emb=args.word_emb,
                 input_key=args.input_key,
@@ -822,12 +876,16 @@ def main(args):
                 save_dir=args.save_dir,
                 device=args.device,
                 epochs=args.epochs,
+                batch_size = args.batch_size,
+                patience = args.patience,
                 dropout=hps["dropout"],
+                in_dropout=args.in_dropout,
                 learning_rate=hps["learning_rate"],
                 beta1=min(hps["beta_a"], hps["beta_b"]),
                 beta2=max(hps["beta_a"], hps["beta_b"]),
                 weight_decay=hps["weight_decay"],
                 batch_accum=hps["batch_accum"],
+                scheudle=args.scheudle,
                 warmup_len=hps["warmup_len"],
                 label_smoothing=hps["label_smoothing"],
                 n_head=n_head,
@@ -839,11 +897,13 @@ def main(args):
                 get_inputs=get_inputs,
                 get_output=get_output,
                 get_predict=get_predict,
+                aggout = args.aggout,
+                multitask = args.multitask,
             )
             return best_loss
 
         result = skopt.gp_minimize(gp_train, search_space, **skopt_kwargs)
-        args.save_dir = args.save_dir / args.embedding
+        # args.save_dir = args.save_dir / args.embedding
         skopt.dump(result, args.save_dir / "results.pkl", store_objective=False)
 
     if args.do_pred:

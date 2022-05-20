@@ -4,16 +4,31 @@ export PYTHONPATH="$REPO_ROOT:$PYTHONOATH"
 echo $PYTHONPATH
 #   --pred_file "/datafast/codwoe/train-data_all/en.dev.json" \
 
-PRED_FILE="/datafast/codwoe/trial-data_all/en.trial.complete.json"
-vocabdset="orig"
+# ROOT="/datafast/codwoe"
+ROOT="/root/codwoe-irb-nlp"
+OUTPUT="$ROOT/output/revdict"
+DATASET="$ROOT/resources/dataset"
+TRAINDEVDSET="orig_lc"
+EMBBEDING="electra"
+LANGUAGE="en"
+trainfile="$DATASET/$TRAINDEVDSET/$LANGUAGE.train.json"
+devfile="$DATASET/$TRAINDEVDSET/$LANGUAGE.dev.json"
+vocabdset=$TRAINDEVDSET
+
+models="$OUTPUT/models/$EMBBEDING/$LANGUAGE"
+logs="$OUTPUT/logs/$EMBBEDING/$LANGUAGE"
+
+# file for which to run predictions
+pred_file="$DATASET/trial-data_all/$LANGUAGE.trial.complete.json"
+pred_output="$OUTPUT/prediction/$LANGUAGE.trial.pred.json"
 
 python main.py \
-      --do_pred --pred_file "$PRED_FILE" \
-      --pred_output "en.trial.pred.json" \
-      --vocab_lang "en" --vocab_subdir "$vocabdset" --vocab_size 8000 \
+      --do_pred --pred_file "$pred_file" \
+      --pred_output "$pred_output" \
+      --vocab_lang "$LANGUAGE" --vocab_subdir "$vocabdset" --vocab_size 8000 \
       --device "cuda" \
-      --model_path "models/best/model.pt" \
-      --settings "revdict-base-mse" --input_key "gloss" --output_key "sgns" \
+      --model_path "$models/best/model.pt" \
+      --settings "revdict-base-mse" --input_key "gloss" --output_key "$EMBBEDING" \
 
 
 

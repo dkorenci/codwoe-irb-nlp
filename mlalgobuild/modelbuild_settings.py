@@ -26,8 +26,8 @@ class BaseSettings():
         ]
         
         self.skopt_kwargs = {
-            'n_calls': 30,
-            'n_initial_points': 10
+            'n_calls': 5,
+            'n_initial_points': 3
         }
         
     def get_criterion(self):

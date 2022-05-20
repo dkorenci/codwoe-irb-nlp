@@ -16,6 +16,7 @@ class RevdictBase(nn.Module):
     def __init__(
         self, max_vocab_idx, d_emb=256, d_output=256, n_head=4, n_layers=4, dropout=0.3, maxlen=512,
             word_emb = None, pad=vocab.PAD_ix, eos=vocab.EOS_ix,
+            aggout = "avg", random_init=True, multitask_size=None
     ):
         super(RevdictBase, self).__init__()
         self.name = str(type(self).__name__)
@@ -25,6 +26,7 @@ class RevdictBase(nn.Module):
         self.padding_idx = pad
         self.eos_idx = eos
         self.maxlen = maxlen
+        self.aggout = aggout
 
         if word_emb is None:
             self.embedding = nn.Embedding(max_vocab_idx, d_emb, padding_idx=self.padding_idx)
@@ -46,6 +48,10 @@ class RevdictBase(nn.Module):
         )
         self.dropout = nn.Dropout(p=dropout)
         self.e_proj = nn.Linear(d_emb, d_output)
+
+        if multitask_size != None:
+            self.multi_proj = nn.Linear(d_emb, multitask_size)
+
         for name, param in self.named_parameters():
             # do not initialize embeddings if pretrained values are used for init
             if "embedding" in name and word_emb is not None: continue
@@ -67,16 +73,30 @@ class RevdictBase(nn.Module):
         transformer_output = self.dropout(
             self.transformer_encoder(src, src_key_padding_mask=src_key_padding_mask.t())
         )
-        #OLD CODE, WITHOUT AVERAGING
-        #summed_embs = transformer_output.masked_fill(
-        #    src_key_padding_mask.unsqueeze(-1), 0
-        #).sum(dim=0)
-        #return self.e_proj(F.relu(summed_embs))
-        # PERFORM AVERAGING
-        masked_out = transformer_output.masked_fill(src_key_padding_mask.unsqueeze(-1), 0)
-        averager = gloss_tensor != self.padding_idx
-        mask_mean = masked_out.sum(0) / averager.sum(0).unsqueeze(-1)
-        return self.e_proj(F.relu(mask_mean))
+        if self.aggout=="sum":
+            summed_embs = transformer_output.masked_fill(
+            src_key_padding_mask.unsqueeze(-1), 0
+            ).sum(dim=0)
+            return self.e_proj(F.relu(summed_embs))
+        
+        elif self.aggout=="avg":
+            masked_out = transformer_output.masked_fill(src_key_padding_mask.unsqueeze(-1), 0)
+            averager = gloss_tensor != self.padding_idx
+            mask_mean = masked_out.sum(0) / averager.sum(0).unsqueeze(-1)
+            # mask_mean = self.e_pred_proj(self.dropout(mask_mean))
+            if hasattr(self, 'multi_proj'):
+                return self.e_proj(F.relu(mask_mean)), self.multi_proj(F.relu(mask_mean))
+            else:
+                return self.e_proj(F.relu(mask_mean))
+
+        elif self.aggout=="eos":
+            src_key_eos_mask = gloss_tensor != self.eos_idx
+            eos_embs = transformer_output.masked_fill(
+                src_key_eos_mask.unsqueeze(-1), 0
+            ).sum(dim=0)
+            return self.e_proj(F.relu(eos_embs))
+        else:
+            raise ValueError("Arg '{}' must be in {}".format(self.aggout, ['sum', 'avg', 'eos']))
 
     @staticmethod
     def load(file):
