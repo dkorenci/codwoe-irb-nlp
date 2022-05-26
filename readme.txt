@@ -76,3 +76,5 @@ defmod_master.sh and especially defmod_batch.sh to get the parameters right.
 -- lowercasing the dataset
 Use the data_analysis.transformations.createDsetOrigLcase method to transform the original datasets.
 If you change the name of the lowercased dataset form 'orig_lc', also change it in the revdict execution scripts.
+-- execution
+revdict_htune.sh and revdict_train.sh can be used to train the revdict model. Prediction of the test dataset can be done with revdict_predict.sh. To achieve results in the CODWOE challenge, we used revdict_htune.sh to automatically search for optimal hyperparameters. We created six solutions that differ in batch size (eg. --batch_size 1024) and utilization of multitask learning (--multitask) approach. For test prediction and scoring, we used only models with the best MSE validation scores. You can find additional information about the process in our paper.
